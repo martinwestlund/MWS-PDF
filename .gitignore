@@ -1,0 +1,10 @@
+# Python cache / virtual env
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# OS / editor clutter
+.DS_Store
+Thumbs.db
+.vscode/

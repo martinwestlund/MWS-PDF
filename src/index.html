@@ -1,0 +1,582 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Prepress Checker MVP</title>
+    <style>
+      :root {
+        color-scheme: light dark;
+        font-family: Arial, sans-serif;
+      }
+
+      body {
+        margin: 0;
+        background: #111;
+        color: #f3f3f3;
+      }
+
+      .app {
+        max-width: 1400px;
+        margin: 0 auto;
+        padding: 20px;
+      }
+
+      .app-header h1 {
+        margin: 0 0 8px;
+      }
+
+      .app-header p {
+        margin: 0 0 20px;
+        color: #cccccc;
+      }
+
+      .controls {
+        display: grid;
+        grid-template-columns: 1fr 1fr auto;
+        gap: 12px;
+        align-items: end;
+        margin-bottom: 18px;
+      }
+
+      .field {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+      }
+
+      .field span {
+        font-size: 0.9rem;
+      }
+
+      button {
+        padding: 10px 14px;
+        border: 1px solid #666;
+        background: #1f1f1f;
+        color: #f3f3f3;
+        cursor: pointer;
+      }
+
+      button:hover {
+        background: #2d2d2d;
+      }
+
+      .status {
+        grid-column: 1 / -1;
+        margin: 0;
+        color: #d8d8d8;
+      }
+
+      .results-layout {
+        display: grid;
+        grid-template-columns: 1.2fr 1fr;
+        gap: 18px;
+      }
+
+      .results-container {
+        border: 1px solid #444;
+        border-radius: 6px;
+        padding: 12px;
+        min-height: 400px;
+        background: #171717;
+      }
+
+      .book-section {
+        margin-bottom: 16px;
+      }
+
+      .book-section h3 {
+        margin: 0 0 8px;
+      }
+
+      .page-list {
+        display: grid;
+        gap: 8px;
+      }
+
+      .page-row {
+        display: grid;
+        grid-template-columns: 80px 1fr auto auto;
+        gap: 12px;
+        align-items: center;
+        border: 1px solid #333;
+        border-radius: 4px;
+        background: #1b1b1b;
+        padding: 8px;
+      }
+
+      .badge {
+        border-radius: 999px;
+        padding: 3px 10px;
+        font-size: 0.8rem;
+        text-transform: uppercase;
+      }
+
+      .badge.ok {
+        background: #1b7f2a;
+      }
+
+      .badge.warning {
+        background: #9a6b00;
+      }
+
+      .badge.missing {
+        background: #a12b2b;
+      }
+
+      .detail-panel {
+        border: 1px solid #444;
+        border-radius: 6px;
+        padding: 12px;
+        background: #171717;
+      }
+
+      #detailContainer ul {
+        margin-top: 6px;
+      }
+
+      #previewCanvas {
+        width: 100%;
+        max-height: 78vh;
+        margin-top: 12px;
+        border: 1px solid #333;
+        background: #fff;
+      }
+
+      @media (max-width: 1000px) {
+        .controls {
+          grid-template-columns: 1fr;
+        }
+        .results-layout {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <header class="app-header">
+        <h1>Prepress Checker MVP</h1>
+        <p>Upload CortexPlanning XML and single-page PDFs, then run checks.</p>
+      </header>
+
+      <section class="controls">
+        <label class="field">
+          <span>XML File</span>
+          <input id="xmlInput" type="file" accept=".xml,text/xml,application/xml" />
+        </label>
+
+        <label class="field">
+          <span>PDF Pages</span>
+          <input id="pdfInput" type="file" accept=".pdf,application/pdf" multiple />
+        </label>
+
+        <button id="runBtn" type="button">Run Analysis</button>
+        <p id="statusMessage" class="status">Waiting for files.</p>
+      </section>
+
+      <section class="results-layout">
+        <div>
+          <h2>Results by Book</h2>
+          <div id="resultsContainer" class="results-container">
+            <p>No results yet.</p>
+          </div>
+        </div>
+
+        <aside class="detail-panel">
+          <h2>Page Detail</h2>
+          <div id="detailContainer">
+            <p>Select a page to preview and inspect issues.</p>
+          </div>
+          <canvas id="previewCanvas" width="620" height="880"></canvas>
+        </aside>
+      </section>
+    </main>
+
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+    <script>
+      function parseFormRange(rangeText) {
+        if (!rangeText) return null;
+        const match = String(rangeText).match(/([A-Za-z]+)\s*(\d+)\s*-\s*([A-Za-z]+)?\s*(\d+)/);
+        if (!match) return null;
+        const leftBook = match[1].toUpperCase();
+        const leftPage = Number.parseInt(match[2], 10);
+        const rightBook = (match[3] || leftBook).toUpperCase();
+        const rightPage = Number.parseInt(match[4], 10);
+        if (Number.isNaN(leftPage) || Number.isNaN(rightPage)) return null;
+        return {
+          left: { book: leftBook, pageNumber: leftPage },
+          right: { book: rightBook, pageNumber: rightPage },
+          raw: rangeText,
+        };
+      }
+
+      function parsePageNumberFromName(name) {
+        const match = String(name || "").match(/(\d+)/);
+        return match ? Number.parseInt(match[1], 10) : NaN;
+      }
+
+      function text(element, selector) {
+        return element?.querySelector(selector)?.textContent?.trim() || "";
+      }
+
+      function parseCortexXml(xmlText) {
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(xmlText, "application/xml");
+        if (xmlDoc.querySelector("parsererror")) throw new Error("Invalid XML file.");
+
+        const pageNodes = Array.from(
+          xmlDoc.querySelectorAll(
+            "publications > publication > editions > edition > zones > zone > books > book > pages > page"
+          )
+        );
+
+        const pages = [];
+        for (const pageNode of pageNodes) {
+          const bookNode = pageNode.closest("book");
+          const zoneNode = pageNode.closest("zone");
+          const book = (text(bookNode, "name") || text(bookNode, "code") || "UNKNOWN").toUpperCase();
+          const zoneName = text(zoneNode, "name");
+          const pageName = text(pageNode, "name");
+          const numberText = text(pageNode, "number");
+          const pageNumber = Number.parseInt(numberText, 10);
+          const safePage = Number.isNaN(pageNumber) ? parsePageNumberFromName(pageName) : pageNumber;
+          const structureExpectedName = text(pageNode, "structureExpectedName");
+          const filenameStem = structureExpectedName || pageName;
+          if (!filenameStem) continue;
+          const filename = filenameStem.toLowerCase().endsWith(".pdf")
+            ? filenameStem
+            : filenameStem + ".pdf";
+          const filenameCandidates = Array.from(
+            new Set([filenameStem, pageName, structureExpectedName, filename].filter(Boolean))
+          );
+          const formName = text(zoneNode, "forms > form > name");
+          const formRange = parseFormRange(formName || zoneName);
+          pages.push({
+            book,
+            pageNumber: Number.isNaN(safePage) ? -1 : safePage,
+            filename,
+            filenameLower: filename.toLowerCase(),
+            filenameCandidates,
+            formRange,
+            sourceTag: pageNode.tagName,
+          });
+        }
+
+        const deduped = [];
+        const seen = new Set();
+        for (const page of pages) {
+          const key = page.book + "::" + page.pageNumber;
+          if (!seen.has(key)) {
+            seen.add(key);
+            deduped.push(page);
+          }
+        }
+
+        deduped.sort((a, b) => (a.book !== b.book ? a.book.localeCompare(b.book) : a.pageNumber - b.pageNumber));
+        return deduped;
+      }
+
+      function normalizeName(name) {
+        return String(name || "").trim().toLowerCase();
+      }
+
+      function withoutPdfExtension(name) {
+        return normalizeName(name).replace(/\.pdf$/i, "");
+      }
+
+      function indexPdfFiles(files) {
+        const map = new Map();
+        for (const file of files || []) {
+          const filenameKey = normalizeName(file.name);
+          if (!filenameKey) continue;
+          const stemKey = withoutPdfExtension(file.name);
+          if (!map.has(filenameKey)) map.set(filenameKey, file);
+          if (stemKey && !map.has(stemKey)) map.set(stemKey, file);
+        }
+        return map;
+      }
+
+      function matchExpectedPages(expectedPages, fileIndex) {
+        const matched = [];
+        const missing = [];
+        const used = new Set();
+        for (const page of expectedPages) {
+          const candidates = [...(page.filenameCandidates || []), page.filename, withoutPdfExtension(page.filename)]
+            .map(normalizeName)
+            .filter(Boolean);
+          let file = null;
+          for (const key of candidates) {
+            file = fileIndex.get(key) || fileIndex.get(withoutPdfExtension(key));
+            if (file) break;
+          }
+          if (file) {
+            matched.push({ ...page, file });
+            used.add(normalizeName(file.name));
+            used.add(withoutPdfExtension(file.name));
+          } else {
+            const expectedHint = (page.filenameCandidates || []).concat(page.filename).filter(Boolean).join(", ");
+            missing.push({
+              ...page,
+              status: "missing",
+              issues: ["Expected PDF file is missing. Expected one of: " + expectedHint],
+            });
+          }
+        }
+
+        const unexpected = [];
+        for (const [key, file] of fileIndex.entries()) {
+          if (!used.has(key)) unexpected.push(file.name);
+        }
+        return { matched, missing, unexpected: Array.from(new Set(unexpected)) };
+      }
+
+      function clamp(value, min, max) {
+        return Math.max(min, Math.min(max, value));
+      }
+
+      function rgbToCmyk(r, g, b) {
+        const rn = r / 255, gn = g / 255, bn = b / 255;
+        const k = 1 - Math.max(rn, gn, bn);
+        if (k >= 1) return { c: 0, m: 0, y: 0, k: 1 };
+        return { c: (1 - rn - k) / (1 - k), m: (1 - gn - k) / (1 - k), y: (1 - bn - k) / (1 - k), k };
+      }
+
+      async function buildPageImageData(page) {
+        const viewport = page.getViewport({ scale: 1.5 });
+        const canvas = document.createElement("canvas");
+        canvas.width = Math.max(1, Math.floor(viewport.width));
+        canvas.height = Math.max(1, Math.floor(viewport.height));
+        const ctx = canvas.getContext("2d", { willReadFrequently: true });
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        return ctx.getImageData(0, 0, canvas.width, canvas.height);
+      }
+
+      function analyzePixels(imageData) {
+        const data = imageData.data;
+        const pixelCount = imageData.width * imageData.height;
+        if (!pixelCount) return { nonGrayRatio: 0, heavyInkRatio: 0 };
+        const stride = clamp(Math.floor(pixelCount / 35000), 1, 12);
+        let sampled = 0, nonGray = 0, heavyInk = 0;
+        for (let i = 0; i < data.length; i += 4 * stride) {
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          sampled += 1;
+          const channelDelta = Math.max(Math.abs(r - g), Math.abs(g - b), Math.abs(r - b));
+          if (channelDelta > 8) nonGray += 1;
+          const cmyk = rgbToCmyk(r, g, b);
+          if (cmyk.c + cmyk.m + cmyk.y + cmyk.k > 3.0) heavyInk += 1;
+        }
+        return { nonGrayRatio: nonGray / sampled, heavyInkRatio: heavyInk / sampled };
+      }
+
+      async function estimateSmallTextWarning(page) {
+        const textContent = await page.getTextContent();
+        let tinyItems = 0, measured = 0;
+        for (const item of textContent.items || []) {
+          const tr = item.transform || [];
+          if (tr.length < 6) continue;
+          const scaleY = Math.hypot(tr[2] || 0, tr[3] || 0);
+          if (!Number.isFinite(scaleY) || scaleY <= 0) continue;
+          measured += 1;
+          if (scaleY < 7.2) tinyItems += 1;
+        }
+        return measured ? { tinyRatio: tinyItems / measured, tinyCount: tinyItems } : { tinyRatio: 0, tinyCount: 0 };
+      }
+
+      async function estimateLowDpiWarning(page) {
+        const opList = await page.getOperatorList();
+        const OPS = window.pdfjsLib && window.pdfjsLib.OPS;
+        if (!OPS) return { imageOps: 0, likelyLowDpi: false };
+        let imageOps = 0;
+        for (const fn of opList.fnArray || []) {
+          if (fn === OPS.paintImageXObject || fn === OPS.paintInlineImageXObject || fn === OPS.paintImageMaskXObject) {
+            imageOps += 1;
+          }
+        }
+        return { imageOps: imageOps, likelyLowDpi: imageOps >= 22 };
+      }
+
+      async function analyzePdfFile(file) {
+        const bytes = await file.arrayBuffer();
+        const doc = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+        const page = await doc.getPage(1);
+        const pixelData = await buildPageImageData(page);
+        const pixelStats = analyzePixels(pixelData);
+        const textStats = await estimateSmallTextWarning(page);
+        const dpiStats = await estimateLowDpiWarning(page);
+        const issues = [];
+        if (dpiStats.likelyLowDpi) issues.push("Low DPI warning: high image operation count (" + dpiStats.imageOps + ").");
+        if (pixelStats.heavyInkRatio > 0.14) issues.push("High TAC warning: " + Math.round(pixelStats.heavyInkRatio * 100) + "% heavy-ink sample.");
+        if (pixelStats.nonGrayRatio > 0.04) issues.push("RGB/color warning: " + Math.round(pixelStats.nonGrayRatio * 100) + "% non-neutral sample.");
+        if (textStats.tinyRatio > 0.3 && textStats.tinyCount >= 20) issues.push("Small text warning: " + textStats.tinyCount + " tiny text items.");
+        await doc.destroy();
+        return { issues: issues, metrics: { imageOps: dpiStats.imageOps } };
+      }
+
+      async function renderPdfPreview(file, canvasElement) {
+        const bytes = await file.arrayBuffer();
+        const doc = await window.pdfjsLib.getDocument({ data: bytes }).promise;
+        const page = await doc.getPage(1);
+        const viewport = page.getViewport({ scale: 1.2 });
+        const ctx = canvasElement.getContext("2d");
+        canvasElement.width = Math.max(1, Math.floor(viewport.width));
+        canvasElement.height = Math.max(1, Math.floor(viewport.height));
+        await page.render({ canvasContext: ctx, viewport }).promise;
+        await doc.destroy();
+      }
+
+      function groupByBook(results) {
+        const grouped = new Map();
+        for (const item of results) {
+          if (!grouped.has(item.book)) grouped.set(item.book, []);
+          grouped.get(item.book).push(item);
+        }
+        for (const pages of grouped.values()) pages.sort((a, b) => a.pageNumber - b.pageNumber);
+        return new Map([...grouped.entries()].sort((a, b) => a[0].localeCompare(b[0])));
+      }
+
+      function renderResults(results, container, onSelect) {
+        container.innerHTML = "";
+        if (!results.length) {
+          container.innerHTML = "<p>No pages parsed from XML.</p>";
+          return;
+        }
+        const grouped = groupByBook(results);
+        for (const [book, pages] of grouped.entries()) {
+          const section = document.createElement("section");
+          section.className = "book-section";
+          section.innerHTML = "<h3>Book " + book + "</h3>";
+          const list = document.createElement("div");
+          list.className = "page-list";
+          for (const page of pages) {
+            const status = page.status === "missing" ? "missing" : page.issues && page.issues.length ? "warning" : "ok";
+            const row = document.createElement("div");
+            row.className = "page-row";
+            row.innerHTML =
+              "<strong>P" + page.pageNumber + "</strong>" +
+              "<span>" + page.filename + "</span>" +
+              '<span class="badge ' + status + '">' + status.toUpperCase() + "</span>";
+            const openBtn = document.createElement("button");
+            openBtn.type = "button";
+            openBtn.textContent = "Open";
+            openBtn.addEventListener("click", function () { onSelect(page); });
+            row.appendChild(openBtn);
+            list.appendChild(row);
+          }
+          section.appendChild(list);
+          container.appendChild(section);
+        }
+      }
+
+      function renderDetail(page, container) {
+        const issueItems = (page.issues || []).map(function (issue) { return "<li>" + issue + "</li>"; }).join("");
+        const formPair = page.formRange
+          ? page.formRange.left.book + page.formRange.left.pageNumber + " - " + page.formRange.right.book + page.formRange.right.pageNumber
+          : "N/A";
+        container.innerHTML =
+          "<p><strong>Book:</strong> " + page.book + "</p>" +
+          "<p><strong>Page:</strong> " + page.pageNumber + "</p>" +
+          "<p><strong>Filename:</strong> " + page.filename + "</p>" +
+          "<p><strong>Form Pair:</strong> " + formPair + "</p>" +
+          "<p><strong>Status:</strong> " + (page.status || (page.issues && page.issues.length ? "warning" : "ok")) + "</p>" +
+          "<h3>Issues</h3>" +
+          (issueItems ? "<ul>" + issueItems + "</ul>" : "<p>No issues detected.</p>");
+      }
+
+      const state = { xmlFile: null, pdfFiles: [], results: [] };
+      const xmlInput = document.getElementById("xmlInput");
+      const pdfInput = document.getElementById("pdfInput");
+      const runBtn = document.getElementById("runBtn");
+      const statusMessage = document.getElementById("statusMessage");
+      const resultsContainer = document.getElementById("resultsContainer");
+      const detailContainer = document.getElementById("detailContainer");
+      const previewCanvas = document.getElementById("previewCanvas");
+
+      function setStatus(message) {
+        statusMessage.textContent = message;
+      }
+
+      function ensurePdfJsReady() {
+        if (!window.pdfjsLib) throw new Error("PDF.js failed to load.");
+        window.pdfjsLib.GlobalWorkerOptions.workerSrc =
+          "https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js";
+      }
+
+      xmlInput.addEventListener("change", function (event) {
+        state.xmlFile = event.target.files && event.target.files[0] ? event.target.files[0] : null;
+        setStatus(state.xmlFile ? "XML selected: " + state.xmlFile.name : "No XML file selected.");
+      });
+
+      pdfInput.addEventListener("change", function (event) {
+        state.pdfFiles = Array.from(event.target.files || []);
+        setStatus(state.pdfFiles.length ? state.pdfFiles.length + " PDF file(s) selected." : "No PDFs selected.");
+      });
+
+      async function runAnalysis() {
+        if (!state.xmlFile) throw new Error("Please select an XML file.");
+        if (!state.pdfFiles.length) throw new Error("Please select at least one PDF file.");
+        ensurePdfJsReady();
+        setStatus("Parsing XML...");
+        const xmlText = await state.xmlFile.text();
+        const expectedPages = parseCortexXml(xmlText);
+        if (!expectedPages.length) throw new Error("No expected pages found in XML.");
+        setStatus("Matching PDFs...");
+        const index = indexPdfFiles(state.pdfFiles);
+        const matching = matchExpectedPages(expectedPages, index);
+        const analyzed = [];
+        for (let i = 0; i < matching.matched.length; i += 1) {
+          const item = matching.matched[i];
+          setStatus("Analyzing PDFs (" + (i + 1) + "/" + matching.matched.length + ")...");
+          try {
+            const analysis = await analyzePdfFile(item.file);
+            analyzed.push({ ...item, issues: analysis.issues, metrics: analysis.metrics, status: analysis.issues.length ? "warning" : "ok" });
+          } catch (error) {
+            analyzed.push({ ...item, issues: ["PDF analysis failed: " + error.message], status: "warning" });
+          }
+        }
+        const results = analyzed.concat(matching.missing);
+        if (matching.unexpected.length) {
+          results.push({
+            book: "UNEXPECTED",
+            pageNumber: 0,
+            filename: matching.unexpected.length + " file(s) not in XML",
+            issues: matching.unexpected.map(function (name) { return "Unexpected upload: " + name; }),
+            status: "warning",
+          });
+        }
+        state.results = results;
+        renderResults(state.results, resultsContainer, async function (page) {
+          renderDetail(page, detailContainer);
+          const ctx = previewCanvas.getContext("2d");
+          if (page.file) {
+            try {
+              await renderPdfPreview(page.file, previewCanvas);
+            } catch (error) {
+              ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+              ctx.font = "14px Arial";
+              ctx.fillStyle = "#111";
+              ctx.fillText("Preview failed: " + error.message, 12, 24);
+            }
+          } else {
+            ctx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+            ctx.font = "14px Arial";
+            ctx.fillStyle = "#111";
+            ctx.fillText("No preview available for missing/unexpected item.", 12, 24);
+          }
+        });
+        setStatus("Done. " + results.length + " result item(s).");
+      }
+
+      runBtn.addEventListener("click", async function () {
+        runBtn.disabled = true;
+        try {
+          await runAnalysis();
+        } catch (error) {
+          setStatus("Error: " + error.message);
+        } finally {
+          runBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
