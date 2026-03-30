@@ -32,3 +32,19 @@ Use this structure in `notes/plan.md`:
 
 You do not need to know everything before starting.
 Break problems into tiny testable pieces and solve one piece at a time.
+
+## Operator Quick Start (Single File)
+
+The prepress checker can run as one file:
+
+1. Copy `src/index.html` to the operator computer (for example, Desktop).
+2. Open `index.html` in Chrome.
+3. Upload one CortexPlanning XML file (for example, `*.GP.xml`).
+4. Upload all single-page PDF files for the run.
+5. Click **Run Analysis**.
+6. Review grouped page statuses (`OK`, `WARNING`, `MISSING`) and open each page for details/preview.
+
+Notes:
+
+- Internet access to `cdnjs.cloudflare.com` is required to load PDF.js from CDN.
+- No install or local backend is required.
